@@ -79,7 +79,15 @@ class VDI_CPT_ACF_Export_Exporter {
 		}
 		wp_reset_postdata();
 
-		$this->stream_csv( $post_type, $acf_fields );
+		$format = isset( $_POST['export_format'] ) && is_string( $_POST['export_format'] )
+			? sanitize_key( wp_unslash( $_POST['export_format'] ) ) : 'csv';
+		$term_scope = isset( $_POST['term_scope'] ) && is_string( $_POST['term_scope'] )
+			? sanitize_key( wp_unslash( $_POST['term_scope'] ) ) : 'assigned';
+		if ( ! in_array( $format, array( 'csv', 'json' ), true ) || ! in_array( $term_scope, array( 'assigned', 'all' ), true ) ) {
+			$this->fail_redirect( 'error', __( 'Choose a valid export format and term scope.', 'vdi-cpt-acf-export' ) );
+		}
+
+		$this->stream_export( $post_type, $acf_fields, $format, $term_scope );
 	}
 
 	/**
@@ -95,92 +103,174 @@ class VDI_CPT_ACF_Export_Exporter {
 	}
 
 	/**
-	 * Stream CSV to browser (UTF-8 BOM). Does not write under web root.
-	 *
-	 * @param string $post_type  Whitelisted post type.
-	 * @param array  $acf_fields Exportable field defs from discovery.
+	 * Stage the export before sending headers so taxonomy failures cannot produce
+	 * a successful-looking, incomplete download. Temporary files are outside the
+	 * web root and are automatically removed when closed.
 	 */
-	private function stream_csv( $post_type, $acf_fields ) {
-		$filename = sprintf(
-			'%s-export-%s.csv',
-			$post_type,
-			current_time( 'Y-m-d' )
-		);
-
-		$out = fopen( 'php://output', 'w' );
+	private function stream_export( $post_type, $acf_fields, $format, $term_scope ) {
+		$out = tmpfile();
 		if ( false === $out ) {
-			$this->fail_redirect(
-				'error',
-				__( 'Could not open the download stream. Please try again.', 'vdi-cpt-acf-export' )
-			);
+			$this->fail_redirect( 'error', __( 'Could not open the temporary export stream.', 'vdi-cpt-acf-export' ) );
 		}
-
-		nocache_headers();
-		header( 'Content-Type: text/csv; charset=utf-8' );
-		header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
-
-		// UTF-8 BOM for Excel.
-		fwrite( $out, "\xEF\xBB\xBF" );
-
-		// Header row: core labels, then ACF field labels (fallback name).
-		$header = array( 'ID', 'Title', 'Status', 'Date' );
-		foreach ( $acf_fields as $field ) {
-			$header[] = ( isset( $field['label'] ) && '' !== $field['label'] )
-				? $field['label']
-				: $field['name'];
-		}
-		fputcsv( $out, $header );
-
-		$paged = 1;
-		do {
-			$query = new WP_Query(
-				array(
-					'post_type'              => $post_type,
-					'post_status'            => 'any',
-					'posts_per_page'         => self::PAGE_SIZE,
-					'paged'                  => $paged,
-					'orderby'                => 'ID',
-					'order'                  => 'ASC',
-					'no_found_rows'          => false,
-					'update_post_meta_cache' => true,
-					'update_post_term_cache' => false,
-				)
-			);
-
-			if ( ! $query->have_posts() ) {
-				wp_reset_postdata();
-				break;
+		try {
+			$this->write_export( $out, $post_type, $acf_fields, $format, $term_scope );
+			if ( ! rewind( $out ) ) {
+				throw new RuntimeException( __( 'Could not rewind the export stream.', 'vdi-cpt-acf-export' ) );
 			}
-
-			while ( $query->have_posts() ) {
-				$query->the_post();
-				$post    = get_post();
-				$post_id = (int) $post->ID;
-
-				$row = array(
-					(string) $post_id,
-					(string) $post->post_title,
-					(string) $post->post_status,
-					(string) $post->post_date,
-				);
-
-				foreach ( $acf_fields as $field ) {
-					$value = function_exists( 'get_field' )
-						? get_field( $field['name'], $post_id )
-						: null;
-					$row[] = $this->flatten_value( $value, isset( $field['type'] ) ? $field['type'] : '' );
-				}
-
-				fputcsv( $out, $row );
-			}
-
+		} catch ( RuntimeException $error ) {
+			fclose( $out );
 			wp_reset_postdata();
-			$max_pages = (int) $query->max_num_pages;
-			$paged++;
-		} while ( $paged <= $max_pages );
+			$this->fail_redirect( 'error', $error->getMessage() );
+		}
 
+		$filename = sprintf( '%s-export-%s.%s', $post_type, current_time( 'Y-m-d' ), $format );
+		nocache_headers();
+		header( 'Content-Type: ' . ( 'json' === $format ? 'application/json' : 'text/csv' ) . '; charset=utf-8' );
+		header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+		fpassthru( $out );
 		fclose( $out );
 		exit;
+	}
+
+	/**
+	 * Write paged posts and taxonomy data with only term keys retained globally.
+	 */
+	private function write_export( $out, $post_type, $acf_fields, $format, $term_scope ) {
+		$collector  = new VDI_CPT_ACF_Export_Taxonomy_Export();
+		$taxonomies = $collector->get_taxonomies( $post_type );
+		$terms_out  = 'json' === $format ? tmpfile() : null;
+		if ( false === $terms_out ) {
+			throw new RuntimeException( __( 'Could not open the temporary term stream.', 'vdi-cpt-acf-export' ) );
+		}
+		$seen        = array();
+		$first_post  = true;
+		try {
+			if ( 'csv' === $format ) {
+				$this->write_bytes( $out, "\xEF\xBB\xBF" );
+				$header = array( 'ID', 'Title', 'Status', 'Date' );
+				foreach ( $acf_fields as $field ) {
+					$header[] = ! empty( $field['label'] ) ? $field['label'] : $field['name'];
+				}
+				foreach ( $taxonomies as $name => $taxonomy ) {
+					$header[] = 'Taxonomy: ' . $name;
+				}
+				$this->write_csv_row( $out, $header );
+			} else {
+				$prefix = array(
+					'schema_version' => 1,
+					'post_type'      => $post_type,
+					'term_scope'     => $term_scope,
+					'acf_fields'     => $acf_fields,
+					'taxonomies'     => $collector->get_definitions( $post_type, $taxonomies ),
+				);
+				$this->write_bytes( $out, substr( $this->encode_json( $prefix ), 0, -1 ) . ',"posts":[' );
+			}
+
+			$paged = 1;
+			do {
+				$query = new WP_Query( array(
+					'post_type' => $post_type, 'post_status' => 'any',
+					'posts_per_page' => self::PAGE_SIZE, 'paged' => $paged,
+					'orderby' => 'ID', 'order' => 'ASC', 'no_found_rows' => false,
+					'update_post_meta_cache' => true, 'update_post_term_cache' => false,
+				) );
+				if ( empty( $query->posts ) ) {
+					break;
+				}
+				$batch = $collector->get_batch( wp_list_pluck( $query->posts, 'ID' ), $taxonomies );
+				$this->check_taxonomy_result( $batch );
+				if ( 'json' === $format ) {
+					$this->write_terms( $terms_out, $batch['terms'], $seen );
+				}
+				foreach ( $query->posts as $post ) {
+					$post_id = (int) $post->ID;
+					$row = array( (string) $post_id, (string) $post->post_title, (string) $post->post_status, (string) $post->post_date );
+					$acf = array();
+					foreach ( $acf_fields as $field ) {
+						$value = function_exists( 'get_field' ) ? get_field( $field['name'], $post_id ) : null;
+						$value = $this->flatten_value( $value, isset( $field['type'] ) ? $field['type'] : '' );
+						$row[] = $value;
+						$acf[ $field['name'] ] = $value;
+					}
+					$relationships = isset( $batch['relationships'][ $post_id ] ) ? $batch['relationships'][ $post_id ] : array();
+					if ( 'csv' === $format ) {
+						foreach ( $taxonomies as $name => $taxonomy ) {
+							$assigned = array();
+							foreach ( $relationships[ $name ] as $reference ) {
+								$term = $batch['terms'][ $name . ':' . $reference['source_term_id'] ];
+								$assigned[] = $term['name'];
+							}
+							$row[] = implode( ', ', $assigned );
+						}
+						$this->write_csv_row( $out, $row );
+					} else {
+						$record = array(
+							'ID' => $post_id, 'Title' => $post->post_title, 'Status' => $post->post_status, 'Date' => $post->post_date,
+							'acf' => (object) $acf, 'taxonomies' => (object) $relationships,
+						);
+						$this->write_bytes( $out, ( $first_post ? '' : ',' ) . $this->encode_json( $record ) );
+						$first_post = false;
+					}
+				}
+				$paged++;
+			} while ( $paged <= (int) $query->max_num_pages );
+
+			if ( 'json' === $format ) {
+				if ( 'all' === $term_scope ) {
+					$offset = 0;
+					do {
+						$terms = $collector->get_all_terms( $taxonomies, $offset, self::PAGE_SIZE );
+						$this->check_taxonomy_result( $terms );
+						$this->write_terms( $terms_out, $terms, $seen );
+						$offset += self::PAGE_SIZE;
+					} while ( ! empty( $terms ) );
+				}
+				$this->write_bytes( $out, '],"terms":[' );
+				if ( ! rewind( $terms_out ) || false === stream_copy_to_stream( $terms_out, $out ) ) {
+					throw new RuntimeException( __( 'Could not copy the term export stream.', 'vdi-cpt-acf-export' ) );
+				}
+				$this->write_bytes( $out, ']}' );
+			}
+		} finally {
+			if ( is_resource( $terms_out ) ) {
+				fclose( $terms_out );
+			}
+		}
+	}
+
+	private function check_taxonomy_result( $result ) {
+		if ( is_wp_error( $result ) ) {
+			throw new RuntimeException( $result->get_error_message() );
+		}
+	}
+
+	private function write_terms( $out, $terms, &$seen ) {
+		foreach ( $terms as $key => $term ) {
+			if ( ! isset( $seen[ $key ] ) ) {
+				$this->write_bytes( $out, ( empty( $seen ) ? '' : ',' ) . $this->encode_json( $term ) );
+				$seen[ $key ] = true;
+			}
+		}
+	}
+
+	private function encode_json( $value ) {
+		$json = wp_json_encode( $value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		if ( false === $json ) {
+			throw new RuntimeException( __( 'Could not encode export data as JSON.', 'vdi-cpt-acf-export' ) );
+		}
+		return $json;
+	}
+
+	private function write_bytes( $out, $bytes ) {
+		if ( strlen( $bytes ) !== fwrite( $out, $bytes ) ) {
+			throw new RuntimeException( __( 'Could not write export data. Check temporary disk space.', 'vdi-cpt-acf-export' ) );
+		}
+	}
+
+	private function write_csv_row( $out, $row ) {
+		if ( false === fputcsv( $out, $row, ',', '"', '' ) ) {
+			throw new RuntimeException( __( 'Could not write the CSV export.', 'vdi-cpt-acf-export' ) );
+		}
 	}
 
 	/**

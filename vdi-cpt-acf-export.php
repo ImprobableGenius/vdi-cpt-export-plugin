@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:       VDI CPT + ACF Export
- * Description:       Export custom post type posts and Advanced Custom Fields to CSV from Tools.
- * Version:           0.1.0
+ * Description:       Export posts, built-in/custom taxonomies, and Advanced Custom Fields to CSV or JSON from Tools.
+ * Version:           0.2.0
  * Author:            Vincent Design
  * Text Domain:       vdi-cpt-acf-export
  * Requires at least: 6.0
@@ -15,10 +15,11 @@ defined( 'ABSPATH' ) || exit;
 
 define( 'VDI_CPT_ACF_EXPORT_FILE', __FILE__ );
 define( 'VDI_CPT_ACF_EXPORT_DIR', plugin_dir_path( __FILE__ ) );
-define( 'VDI_CPT_ACF_EXPORT_VERSION', '0.1.0' );
+define( 'VDI_CPT_ACF_EXPORT_VERSION', '0.2.0' );
 
 require_once VDI_CPT_ACF_EXPORT_DIR . 'includes/class-field-discovery.php';
 require_once VDI_CPT_ACF_EXPORT_DIR . 'includes/class-admin-page.php';
+require_once VDI_CPT_ACF_EXPORT_DIR . 'includes/class-taxonomy-export.php';
 require_once VDI_CPT_ACF_EXPORT_DIR . 'includes/class-exporter.php';
 
 /**
