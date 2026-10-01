@@ -129,7 +129,7 @@ class VDI_CPT_ACF_Export_Admin_Page {
 				<div class="notice notice-warning"><p>
 					<?php
 					echo esc_html__(
-						'Advanced Custom Fields (ACF) is not active. You can still export core columns (ID, Title, Status, Date). Custom field columns require ACF.',
+						'Advanced Custom Fields (ACF) is not active. You can still export core columns (ID, Title, Status, Date) and attached taxonomies. Custom field columns require ACF.',
 						'vdi-cpt-acf-export'
 					);
 					?>
@@ -138,7 +138,7 @@ class VDI_CPT_ACF_Export_Admin_Page {
 				<div class="notice notice-warning"><p>
 					<?php
 					echo esc_html__(
-						'No ACF field groups with exportable (scalar) fields were found for public post types. Export will still download core columns (ID, Title, Status, Date) only. If groups target a specific CPT, pick that type and export — columns are discovered per post type.',
+						'No ACF field groups with exportable (scalar) fields were found for public post types. Export will still include core columns (ID, Title, Status, Date) and attached taxonomies. If groups target a specific CPT, pick that type and export — columns are discovered per post type.',
 						'vdi-cpt-acf-export'
 					);
 					?>
@@ -154,7 +154,7 @@ class VDI_CPT_ACF_Export_Admin_Page {
 			<p>
 				<?php
 				echo esc_html__(
-					'Download a CSV of posts for a public post type. Columns: ID, Title, Status, Date, then scalar ACF field labels (text, number, select, checkbox, dates, etc.). Complex ACF types (repeaters, relationships, images, groups, etc.) are skipped in v0. If the selected CPT has no matching field groups, only core columns are included.',
+					'Export posts for a public post type, including attached built-in and custom taxonomies. CSV retains ID, Title, Status, Date and scalar ACF columns, then adds taxonomy assignments as comma-separated term names. Choose JSON for taxonomy definitions, term metadata, ancestor terms, and exact post assignments. Complex ACF fields are skipped. Protected term metadata is excluded; other term metadata may contain sensitive plugin-specific data.',
 					'vdi-cpt-acf-export'
 				);
 				?>
@@ -180,11 +180,26 @@ class VDI_CPT_ACF_Export_Admin_Page {
 							</select>
 						</td>
 					</tr>
+					<tr>
+						<th scope="row"><label for="vdi-export-format"><?php echo esc_html__( 'Export format', 'vdi-cpt-acf-export' ); ?></label></th>
+						<td><select name="export_format" id="vdi-export-format">
+							<option value="csv"><?php echo esc_html__( 'CSV — posts and assigned terms', 'vdi-cpt-acf-export' ); ?></option>
+							<option value="json"><?php echo esc_html__( 'JSON — posts and complete taxonomy data', 'vdi-cpt-acf-export' ); ?></option>
+						</select></td>
+					</tr>
+					<tr>
+						<th scope="row"><label for="vdi-term-scope"><?php echo esc_html__( 'JSON term scope', 'vdi-cpt-acf-export' ); ?></label></th>
+						<td><select name="term_scope" id="vdi-term-scope">
+							<option value="assigned"><?php echo esc_html__( 'Assigned terms and ancestors', 'vdi-cpt-acf-export' ); ?></option>
+							<option value="all"><?php echo esc_html__( 'All terms in attached taxonomies', 'vdi-cpt-acf-export' ); ?></option>
+						</select>
+						<p class="description"><?php echo esc_html__( 'Applies to JSON only. CSV always includes direct assignments only.', 'vdi-cpt-acf-export' ); ?></p></td>
+					</tr>
 				</table>
 
 				<?php
 				submit_button(
-					__( 'Download CSV', 'vdi-cpt-acf-export' ),
+					__( 'Download export', 'vdi-cpt-acf-export' ),
 					'primary',
 					'submit',
 					true,
